@@ -6,6 +6,8 @@ Created by Ayelet Technology Private Limited
 
 A Model Context Protocol (MCP) server that provides powerful source code analysis capabilities for Unreal Engine codebases. This tool enables AI assistants like Claude and Cline to deeply understand and analyze Unreal Engine source code.
 
+This is an updated version of the Ayelet implementation that addresses the changes in the tree-sitter and tree-sitter-cpp libraries.
+
 
 <a href="https://glama.ai/mcp/servers/z36022whws"><img width="380" height="200" src="https://glama.ai/mcp/servers/z36022whws/badge" alt="Unreal Engine Code Analyzer Server MCP server" /></a>
 
