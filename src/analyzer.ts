@@ -6,7 +6,8 @@ import Parser, { Query, QueryMatch, QueryCapture, SyntaxNode } from 'tree-sitter
 import Cpp from 'tree-sitter-cpp';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as glob from 'glob';
+import { globSync } from 'fs';
+import { realpathSync } from 'fs';
 
 interface ClassInfo {
   name: string;
@@ -220,10 +221,11 @@ export class UnrealCodeAnalyzer {
     // Process files in parallel batches
     const BATCH_SIZE = 10;
     for (const basePath of paths) {
-      const files = glob.sync('**/*.h', { cwd: basePath, absolute: true });
-      for (let i = 0; i < files.length; i += BATCH_SIZE) {
-        const batch = files.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(file => this.parseFile(file)));
+      const files = globSync('**/*.h', { cwd: basePath });
+      const absoluteFiles = files.map(file => path.resolve(basePath, file));
+      for (let i = 0; i < absoluteFiles.length; i += BATCH_SIZE) {
+        const batch = absoluteFiles.slice(i, i + BATCH_SIZE);
+      Promise.all(batch.map(file => this.parseFile(file)));
       }
     }
   }
@@ -387,12 +389,13 @@ export class UnrealCodeAnalyzer {
       throw new Error('No valid search path configured');
     }
 
-    const files = glob.sync('**/*.h', {
+    const files = globSync('**/*.h', {
       cwd: searchPath,
-      absolute: true,
     });
+    
+    const absoluteFiles =files.map(file => path.resolve(searchPath, file));
 
-    for (const file of files) {
+    for (const file of absoluteFiles) {
       await this.parseFile(file);
       const classInfo = this.classCache.get(className);
       if (classInfo) {
@@ -447,17 +450,18 @@ export class UnrealCodeAnalyzer {
       throw new Error('No valid search path configured');
     }
 
-    const files = glob.sync('**/*.{h,cpp}', {
+    const files = globSync('**/*.{h,cpp}', {
       cwd: searchPath,
-      absolute: true,
     });
+
+    const absoluteFiles =files.map(file => path.resolve(searchPath, file));
 
     // Process files in parallel with a concurrency limit
     const BATCH_SIZE = 10;
     const references: CodeReference[] = [];
 
-    for (let i = 0; i < files.length; i += BATCH_SIZE) {
-      const batch = files.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < absoluteFiles.length; i += BATCH_SIZE) {
+      const batch = absoluteFiles.slice(i, i + BATCH_SIZE);
       const batchResults = await Promise.all(
         batch.map(async (file) => {
           const content = fs.readFileSync(file, 'utf8');
@@ -531,11 +535,9 @@ export class UnrealCodeAnalyzer {
     }
 
     const results: CodeReference[] = [];
-    const files = glob.sync(`**/${filePattern}`, {
+    const files = globSync(`**/${filePattern}`, {
       cwd: this.unrealPath,
-      absolute: true,
     });
-
     const regex = new RegExp(query, 'gi');
     const BATCH_SIZE = 20;
 
@@ -934,9 +936,8 @@ export class UnrealCodeAnalyzer {
     }
 
     // Get all source files
-    subsystemInfo.sourceFiles = glob.sync('**/*.{h,cpp}', {
+    subsystemInfo.sourceFiles = globSync('**/*.{h,cpp}', {
       cwd: fullPath,
-      absolute: true,
     });
 
     // Process files in parallel batches
