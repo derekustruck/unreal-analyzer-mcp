@@ -3,10 +3,14 @@
  * Created by Ayelet Technology Private Limited
  */
 
-import { Server, StdioServerTransport } from '@modelcontextprotocol/create-server';
-import type { CallToolRequest, ListToolsRequest } from '@modelcontextprotocol/create-server';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { UnrealCodeAnalyzer } from './analyzer.js';
-import { GAME_GENRES, GameGenre, GenreFlag } from './types/game-genres.js';
 
 class UnrealAnalyzerServer {
   private server: Server;
@@ -36,7 +40,7 @@ class UnrealAnalyzerServer {
   }
 
   private setupToolHandlers() {
-    this.server.setRequestHandler<ListToolsRequest>('list_tools', async () => ({
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
           name: 'set_unreal_path',
@@ -231,7 +235,7 @@ class UnrealAnalyzerServer {
       ],
     }));
 
-    this.server.setRequestHandler<CallToolRequest>('call_tool', async (request: CallToolRequest) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Only check for initialization for analysis tools
       const analysisTools = ['analyze_class', 'find_class_hierarchy', 'find_references', 'search_code', 'analyze_subsystem', 'query_api'];
       if (analysisTools.includes(request.params.name) && !this.analyzer.isInitialized() && 

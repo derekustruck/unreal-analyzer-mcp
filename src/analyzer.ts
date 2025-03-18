@@ -2,8 +2,8 @@
  * Created by Ayelet Technology Private Limited
  */
 
-import Parser, { Query, QueryCapture, SyntaxNode } from 'tree-sitter';
-import * as CPP from 'tree-sitter-cpp';
+import Parser, { Query, QueryMatch, QueryCapture, SyntaxNode } from 'tree-sitter';
+import Cpp from 'tree-sitter-cpp';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as glob from 'glob';
@@ -118,12 +118,12 @@ interface CodePatternMatch {
   learningResources: LearningResource[];
 }
 
-type ExtendedParser = Parser & {
-  createQuery(pattern: string): Query;
-};
+//type ExtendedParser = Parser & {
+//  createQuery(pattern: string): Query;
+//};
 
 export class UnrealCodeAnalyzer {
-  private parser: ExtendedParser;
+  private parser: Parser;
   private unrealPath: string | null = null;
   private customPath: string | null = null;
   private classCache: Map<string, ClassInfo> = new Map();
@@ -142,14 +142,23 @@ export class UnrealCodeAnalyzer {
   };
 
   constructor() {
-    this.parser = new Parser() as ExtendedParser;
-    this.parser.setLanguage(CPP);
+    this.parser = new Parser();
+    this.parser.setLanguage(Cpp);
     
-    // Pre-cache common queries
+    const language = this.parser.getLanguage();
+    
+    // Pre-cache common queries using the correct Tree-sitter API
     Object.entries(this.QUERY_PATTERNS).forEach(([key, pattern]) => {
-      const query = this.parser.createQuery(pattern);
-      if (query) {
-        this.queryCache.set(key, query);
+      try {
+        if (language) {
+          // Create query using the Query constructor with language and pattern
+          const query = new Query(language, pattern);
+          this.queryCache.set(key, query);
+        } else {
+          console.error('Failed to get language from parser');
+        }
+      } catch (error) {
+        console.error(`Failed to create query for pattern '${key}':`, error);
       }
     });
   }
@@ -221,6 +230,7 @@ export class UnrealCodeAnalyzer {
 
   private async parseFile(filePath: string): Promise<void> {
     const content = fs.readFileSync(filePath, 'utf8');
+    const language = this.parser.getLanguage();
     let tree = this.astCache.get(filePath);
     
     if (!tree || tree.rootNode.hasError()) {
@@ -230,7 +240,7 @@ export class UnrealCodeAnalyzer {
 
     let classQuery = this.queryCache.get('CLASS');
     if (!classQuery) {
-      classQuery = this.parser.createQuery(this.QUERY_PATTERNS.CLASS);
+      classQuery = new Query(language, this.QUERY_PATTERNS.CLASS);
       this.queryCache.set('CLASS', classQuery);
     }
 
@@ -467,12 +477,19 @@ export class UnrealCodeAnalyzer {
           let query = this.queryCache.get(cacheKey);
           
           if (!query) {
-            query = this.parser.createQuery(queryString);
-            this.queryCache.set(cacheKey, query);
-          }
-
-          if (!query || !tree) {
-            return [];
+            try {
+              const language = this.parser.getLanguage();
+              if (language) {
+                query = new Query(language, queryString);
+                this.queryCache.set(cacheKey, query);
+              } else {
+                console.error('Failed to get language from parser');
+                return [];
+              }
+            } catch (error) {
+              console.error(`Failed to create query: ${error}`);
+              return [];
+            }
           }
 
           const matches = query.matches(tree.rootNode);
