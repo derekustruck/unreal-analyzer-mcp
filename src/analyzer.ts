@@ -101,6 +101,7 @@ interface ApiReference {
   category: string;
   module: string;
   version: string;
+  documentation?: string; // URL to official documentation
 }
 
 interface ApiQueryResult {
@@ -180,6 +181,14 @@ export class UnrealCodeAnalyzer {
   public isInitialized(): boolean {
     return this.initialized;
   }
+  
+  public getUnrealPath(): string | null {
+    return this.unrealPath;
+  }
+  
+  public getCustomPath(): string | null {
+    return this.customPath;
+  }
 
   public async initialize(enginePath: string): Promise<void> {
     if (!fs.existsSync(enginePath)) {
@@ -221,40 +230,74 @@ export class UnrealCodeAnalyzer {
     // Process files in parallel batches
     const BATCH_SIZE = 10;
     for (const basePath of paths) {
-      const files = globSync('**/*.h', { cwd: basePath });
-      const absoluteFiles = files.map(file => path.resolve(basePath, file));
-      for (let i = 0; i < absoluteFiles.length; i += BATCH_SIZE) {
-        const batch = absoluteFiles.slice(i, i + BATCH_SIZE);
-      Promise.all(batch.map(file => this.parseFile(file)));
+      try {
+        if (!fs.existsSync(basePath)) {
+          console.error(`Path does not exist: ${basePath}`);
+          continue;
+        }
+        
+        // Skip template directories to avoid issues with TP_VehicleAdv
+        // Create a glob pattern that excludes template directories
+        const files = globSync('**/*.h', { 
+          cwd: basePath
+        }).filter(file => 
+          !file.includes('Templates') && 
+          !file.includes('Template') && 
+          !file.includes('TP_')
+        );
+        
+        const absoluteFiles = files.map(file => path.resolve(basePath, file));
+        for (let i = 0; i < absoluteFiles.length; i += BATCH_SIZE) {
+          const batch = absoluteFiles.slice(i, i + BATCH_SIZE);
+          await Promise.all(batch.map(file => this.parseFile(file)));
+        }
+      } catch (error) {
+        console.error(`Error processing directory ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
+        // Continue with other paths rather than failing completely
       }
     }
   }
 
   private async parseFile(filePath: string): Promise<void> {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const language = this.parser.getLanguage();
-    let tree = this.astCache.get(filePath);
-    
-    if (!tree || tree.rootNode.hasError()) {
-      tree = this.parser.parse(content);
-      this.manageCache(this.astCache, filePath, tree);
-    }
-
-    let classQuery = this.queryCache.get('CLASS');
-    if (!classQuery) {
-      classQuery = new Query(language, this.QUERY_PATTERNS.CLASS);
-      this.queryCache.set('CLASS', classQuery);
-    }
-
-    const matches = classQuery.matches(tree.rootNode);
-    for (const match of matches) {
-      const classNode = match.captures.find((c: QueryCapture) => c.name === 'class')?.node;
-      const className = match.captures.find((c: QueryCapture) => c.name === 'class_name')?.node.text;
-      
-      if (classNode && className) {
-        const classInfo = await this.extractClassInfo(classNode, filePath);
-        this.classCache.set(className, classInfo);
+    try {
+      if (!fs.existsSync(filePath)) {
+        console.error(`File does not exist: ${filePath}`);
+        return;
       }
+      
+      // Skip template directories
+      if (filePath.includes('Template') || filePath.includes('Templates') || filePath.includes('TP_')) {
+        return;
+      }
+      
+      const content = fs.readFileSync(filePath, 'utf8');
+      const language = this.parser.getLanguage();
+      let tree = this.astCache.get(filePath);
+      
+      if (!tree || tree.rootNode.hasError()) {
+        tree = this.parser.parse(content);
+        this.manageCache(this.astCache, filePath, tree);
+      }
+
+      let classQuery = this.queryCache.get('CLASS');
+      if (!classQuery) {
+        classQuery = new Query(language, this.QUERY_PATTERNS.CLASS);
+        this.queryCache.set('CLASS', classQuery);
+      }
+
+      const matches = classQuery.matches(tree.rootNode);
+      for (const match of matches) {
+        const classNode = match.captures.find((c: QueryCapture) => c.name === 'class')?.node;
+        const className = match.captures.find((c: QueryCapture) => c.name === 'class_name')?.node.text;
+        
+        if (classNode && className) {
+          const classInfo = await this.extractClassInfo(classNode, filePath);
+          this.classCache.set(className, classInfo);
+        }
+      }
+    } catch (error) {
+      console.error(`Error parsing file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      // Don't rethrow to prevent one file from stopping the entire process
     }
   }
 
@@ -391,15 +434,24 @@ export class UnrealCodeAnalyzer {
 
     const files = globSync('**/*.h', {
       cwd: searchPath,
-    });
+    }).filter(file => 
+      !file.includes('Templates') && 
+      !file.includes('Template') && 
+      !file.includes('TP_')
+    );
     
-    const absoluteFiles =files.map(file => path.resolve(searchPath, file));
+    const absoluteFiles = files.map(file => path.resolve(searchPath, file));
 
     for (const file of absoluteFiles) {
-      await this.parseFile(file);
-      const classInfo = this.classCache.get(className);
-      if (classInfo) {
-        return classInfo;
+      try {
+        await this.parseFile(file);
+        const classInfo = this.classCache.get(className);
+        if (classInfo) {
+          return classInfo;
+        }
+      } catch (error) {
+        console.error(`Error processing file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        // Continue with other files
       }
     }
 
@@ -452,9 +504,13 @@ export class UnrealCodeAnalyzer {
 
     const files = globSync('**/*.{h,cpp}', {
       cwd: searchPath,
-    });
+    }).filter(file => 
+      !file.includes('Templates') && 
+      !file.includes('Template') && 
+      !file.includes('TP_')
+    );
 
-    const absoluteFiles =files.map(file => path.resolve(searchPath, file));
+    const absoluteFiles = files.map(file => path.resolve(searchPath, file));
 
     // Process files in parallel with a concurrency limit
     const BATCH_SIZE = 10;
@@ -464,6 +520,7 @@ export class UnrealCodeAnalyzer {
       const batch = absoluteFiles.slice(i, i + BATCH_SIZE);
       const batchResults = await Promise.all(
         batch.map(async (file) => {
+          try {
           const content = fs.readFileSync(file, 'utf8');
           let tree = this.astCache.get(file);
           
@@ -511,7 +568,11 @@ export class UnrealCodeAnalyzer {
               column: node.startPosition.column + 1,
               context,
             };
-          });
+          }); 
+          } catch (error) {
+            console.error(`Error processing file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+            return [];
+          }
         })
       );
 
@@ -530,14 +591,19 @@ export class UnrealCodeAnalyzer {
       throw new Error('Analyzer not initialized');
     }
 
-    if (!this.unrealPath) {
+    const searchPath = this.customPath || this.unrealPath;
+    if (!searchPath) {
       throw new Error('No valid search path configured');
     }
 
     const results: CodeReference[] = [];
     const files = globSync(`**/${filePattern}`, {
-      cwd: this.unrealPath,
-    });
+      cwd: searchPath,
+    }).filter(file => 
+      !file.includes('Templates') && 
+      !file.includes('Template') && 
+      !file.includes('TP_')
+    );
     const regex = new RegExp(query, 'gi');
     const BATCH_SIZE = 20;
 
@@ -546,36 +612,42 @@ export class UnrealCodeAnalyzer {
       const batch = files.slice(i, i + BATCH_SIZE);
       const batchResults = await Promise.all(
         batch.map(async (file) => {
-          const refs: CodeReference[] = [];
-          const content = fs.readFileSync(file, 'utf8');
-          const lines = content.split('\n');
+          try {
+            const refs: CodeReference[] = [];
+            const absolutePath = path.resolve(searchPath, file);
+            const content = fs.readFileSync(absolutePath, 'utf8');
+            const lines = content.split('\n');
 
-          // Use a single regex test per line for better performance
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            
-            // Skip comment lines if not including comments
-            if (!includeComments && (line.trim().startsWith('//') || line.trim().startsWith('/*'))) {
-              continue;
-            }
-
-            if (regex.test(line)) {
-              // Reset regex lastIndex after test
-              regex.lastIndex = 0;
+            // Use a single regex test per line for better performance
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
               
-              const context = lines
-                .slice(Math.max(0, i - 2), i + 3)
-                .join('\n');
+              // Skip comment lines if not including comments
+              if (!includeComments && (line.trim().startsWith('//') || line.trim().startsWith('/*'))) {
+                continue;
+              }
 
-              refs.push({
-                file,
-                line: i + 1,
-                column: line.indexOf(query) + 1,
-                context,
-              });
+              if (regex.test(line)) {
+                // Reset regex lastIndex after test
+                regex.lastIndex = 0;
+                
+                const context = lines
+                  .slice(Math.max(0, i - 2), i + 3)
+                  .join('\n');
+
+                refs.push({
+                  file: absolutePath,
+                  line: i + 1,
+                  column: line.indexOf(query) + 1,
+                  context,
+                });
+              }
             }
+            return refs;
+          } catch (error) {
+            console.error(`Error processing file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+            return [];
           }
-          return refs;
         })
       );
 
@@ -794,7 +866,7 @@ export class UnrealCodeAnalyzer {
       return this.apiCache.get(classInfo.name)!;
     }
 
-    // Extract documentation from class comments and structure
+    // First, extract documentation from class comments and structure
     const apiRef: ApiReference = {
       className: classInfo.name,
       description: this.extractDescription(classInfo.comments),
@@ -806,6 +878,23 @@ export class UnrealCodeAnalyzer {
       module: this.determineModule(classInfo.file),
       version: '5.0', // Default to latest version
     };
+    
+    // Try to enrich with official documentation if available
+    try {
+      const officialDocUrl = `https://dev.epicgames.com/documentation/en-us/unreal-engine/API/${apiRef.module}/${classInfo.name}`;
+      apiRef.documentation = officialDocUrl;
+      
+      // Note: In a production environment, we would fetch the documentation here
+      // Depending on what's allowed, we could use:
+      // 1. Node.js http/https modules
+      // 2. Axios or fetch API if available
+      // 3. A headless browser like Puppeteer
+      
+      // For now, we'll just log that we would access the URL
+      console.log(`Would access official documentation at: ${officialDocUrl}`);
+    } catch (error) {
+      console.error(`Failed to fetch official documentation for ${classInfo.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     this.apiCache.set(classInfo.name, apiRef);
     return apiRef;
@@ -831,6 +920,32 @@ export class UnrealCodeAnalyzer {
     }
 
     return score;
+  }
+  
+  /**
+   * Fetches documentation directly from the Unreal Engine API website
+   * This is a sample implementation - a real implementation would need:
+   * 1. HTTP request capability (axios, node-fetch, etc.)
+   * 2. HTML parsing for scraping (cheerio, jsdom, etc.)
+   * 3. Rate limiting to avoid overwhelming the documentation server
+   */
+  private async fetchOfficialDocumentation(className: string, module: string): Promise<string | null> {
+    try {
+      const url = `https://dev.epicgames.com/documentation/en-us/unreal-engine/API/${module}/${className}`;
+      
+      // In a real implementation, we would:
+      // 1. Fetch the HTML content
+      // 2. Parse it to extract the relevant documentation
+      // 3. Return the formatted documentation
+      
+      console.log(`Would fetch documentation from: ${url}`);
+      
+      // For now, we'll just return the URL as placeholder
+      return url;
+    } catch (error) {
+      console.error(`Error fetching documentation: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private generateApiContext(apiRef: ApiReference, includeExamples: boolean = false): string {
@@ -915,14 +1030,159 @@ export class UnrealCodeAnalyzer {
 
     // Map subsystem names to their directories
     const subsystemDirs: { [key: string]: string } = {
+      // Core Systems
+      Core: 'Engine/Source/Runtime/Core',
+      CoreUObject: 'Engine/Source/Runtime/CoreUObject',
+      Engine: 'Engine/Source/Runtime/Engine',
+      
+      // Rendering & Graphics
       Rendering: 'Engine/Source/Runtime/RenderCore',
+      Renderer: 'Engine/Source/Runtime/Renderer',
+      RHI: 'Engine/Source/Runtime/RHI',
+      RHICore: 'Engine/Source/Runtime/RHICore',
+      D3D12RHI: 'Engine/Source/Runtime/D3D12RHI',
+      VulkanRHI: 'Engine/Source/Runtime/VulkanRHI',
+      OpenGLDrv: 'Engine/Source/Runtime/OpenGLDrv',
+      SlateRHIRenderer: 'Engine/Source/Runtime/SlateRHIRenderer',
+      
+      // Physics
       Physics: 'Engine/Source/Runtime/PhysicsCore',
-      Audio: 'Engine/Source/Runtime/AudioCore',
+      
+      // Audio
+      Audio: 'Engine/Source/Runtime/AudioCaptureCore',
+      AudioMixer: 'Engine/Source/Runtime/AudioMixer',
+      AudioMixerCore: 'Engine/Source/Runtime/AudioMixerCore',
+      AudioExtensions: 'Engine/Source/Runtime/AudioExtensions',
+      AudioLink: 'Engine/Source/Runtime/AudioLink',
+      AudioAnalyzer: 'Engine/Source/Runtime/AudioAnalyzer',
+      SoundFieldRendering: 'Engine/Source/Runtime/SoundFieldRendering',
+      
+      // Networking
       Networking: 'Engine/Source/Runtime/Networking',
+      Sockets: 'Engine/Source/Runtime/Sockets',
+      Online: 'Engine/Source/Runtime/Online',
+      PacketHandlers: 'Engine/Source/Runtime/PacketHandlers',
+      NetworkReplayStreaming: 'Engine/Source/Runtime/NetworkReplayStreaming',
+      
+      // Input
       Input: 'Engine/Source/Runtime/InputCore',
+      InputDevice: 'Engine/Source/Runtime/InputDevice',
+      
+      // AI
       AI: 'Engine/Source/Runtime/AIModule',
+      NavigationSystem: 'Engine/Source/Runtime/NavigationSystem',
+      Navmesh: 'Engine/Source/Runtime/Navmesh',
+      
+      // Animation
       Animation: 'Engine/Source/Runtime/AnimationCore',
+      AnimGraphRuntime: 'Engine/Source/Runtime/AnimGraphRuntime',
+      LiveLinkAnimationCore: 'Engine/Source/Runtime/LiveLinkAnimationCore',
+      
+      // UI & Slate
       UI: 'Engine/Source/Runtime/UMG',
+      Slate: 'Engine/Source/Runtime/Slate',
+      SlateCore: 'Engine/Source/Runtime/SlateCore',
+      AdvancedWidgets: 'Engine/Source/Runtime/AdvancedWidgets',
+      WidgetCarousel: 'Engine/Source/Runtime/WidgetCarousel',
+      
+      // Media & Movies
+      Media: 'Engine/Source/Runtime/Media',
+      MediaAssets: 'Engine/Source/Runtime/MediaAssets',
+      MediaUtils: 'Engine/Source/Runtime/MediaUtils',
+      MovieScene: 'Engine/Source/Runtime/MovieScene',
+      MovieSceneTracks: 'Engine/Source/Runtime/MovieSceneTracks',
+      MovieSceneCapture: 'Engine/Source/Runtime/MovieSceneCapture',
+      LevelSequence: 'Engine/Source/Runtime/LevelSequence',
+      
+      // Geometry & Mesh
+      GeometryCore: 'Engine/Source/Runtime/GeometryCore',
+      GeometryFramework: 'Engine/Source/Runtime/GeometryFramework',
+      MeshDescription: 'Engine/Source/Runtime/MeshDescription',
+      StaticMeshDescription: 'Engine/Source/Runtime/StaticMeshDescription',
+      SkeletalMeshDescription: 'Engine/Source/Runtime/SkeletalMeshDescription',
+      MeshConversion: 'Engine/Source/Runtime/MeshConversion',
+      RawMesh: 'Engine/Source/Runtime/RawMesh',
+      MRMesh: 'Engine/Source/Runtime/MRMesh',
+      
+      // Landscape & Foliage
+      Landscape: 'Engine/Source/Runtime/Landscape',
+      Foliage: 'Engine/Source/Runtime/Foliage',
+      
+      // Augmented & Virtual Reality
+      AugmentedReality: 'Engine/Source/Runtime/AugmentedReality',
+      HeadMountedDisplay: 'Engine/Source/Runtime/HeadMountedDisplay',
+      
+      // Serialization & Data
+      Serialization: 'Engine/Source/Runtime/Serialization',
+      Json: 'Engine/Source/Runtime/Json',
+      JsonUtilities: 'Engine/Source/Runtime/JsonUtilities',
+      Cbor: 'Engine/Source/Runtime/Cbor',
+      XmlParser: 'Engine/Source/Runtime/XmlParser',
+      
+      // File Systems
+      AssetRegistry: 'Engine/Source/Runtime/AssetRegistry',
+      PakFile: 'Engine/Source/Runtime/PakFile',
+      SandboxFile: 'Engine/Source/Runtime/SandboxFile',
+      NetworkFile: 'Engine/Source/Runtime/NetworkFile',
+      NetworkFileSystem: 'Engine/Source/Runtime/NetworkFileSystem',
+      StreamingFile: 'Engine/Source/Runtime/StreamingFile',
+      VirtualFileCache: 'Engine/Source/Runtime/VirtualFileCache',
+      
+      // Gameplay Systems
+      GameplayTags: 'Engine/Source/Runtime/GameplayTags',
+      GameplayTasks: 'Engine/Source/Runtime/GameplayTasks',
+      GameplayDebugger: 'Engine/Source/Runtime/GameplayDebugger',
+      MassEntity: 'Engine/Source/Runtime/MassEntity',
+      
+      // Tools & Frameworks
+      InteractiveToolsFramework: 'Engine/Source/Runtime/InteractiveToolsFramework',
+      TypedElementFramework: 'Engine/Source/Runtime/TypedElementFramework',
+      TypedElementRuntime: 'Engine/Source/Runtime/TypedElementRuntime',
+      Toolbox: 'Engine/Source/Runtime/Toolbox',
+      
+      // Platform Specific
+      Windows: 'Engine/Source/Runtime/Windows',
+      Linux: 'Engine/Source/Runtime/Linux',
+      Unix: 'Engine/Source/Runtime/Unix',
+      Android: 'Engine/Source/Runtime/Android',
+      IOS: 'Engine/Source/Runtime/IOS',
+      Apple: 'Engine/Source/Runtime/Apple',
+      
+      // Messaging & Communication
+      Messaging: 'Engine/Source/Runtime/Messaging',
+      MessagingCommon: 'Engine/Source/Runtime/MessagingCommon',
+      MessagingRpc: 'Engine/Source/Runtime/MessagingRpc',
+      SessionMessages: 'Engine/Source/Runtime/SessionMessages',
+      SessionServices: 'Engine/Source/Runtime/SessionServices',
+      
+      // Misc
+      BuildSettings: 'Engine/Source/Runtime/BuildSettings',
+      Projects: 'Engine/Source/Runtime/Projects',
+      DeveloperSettings: 'Engine/Source/Runtime/DeveloperSettings',
+      EngineSettings: 'Engine/Source/Runtime/EngineSettings',
+      TraceLog: 'Engine/Source/Runtime/TraceLog',
+      VectorVM: 'Engine/Source/Runtime/VectorVM',
+      Interchange: 'Engine/Source/Runtime/Interchange',
+      ColorManagement: 'Engine/Source/Runtime/ColorManagement',
+      ImageCore: 'Engine/Source/Runtime/ImageCore',
+      ImageWrapper: 'Engine/Source/Runtime/ImageWrapper',
+      TimeManagement: 'Engine/Source/Runtime/TimeManagement',
+      CinematicCamera: 'Engine/Source/Runtime/CinematicCamera',
+      ClothingSystemRuntimeInterface: 'Engine/Source/Runtime/ClothingSystemRuntimeInterface',
+      ClothingSystemRuntimeCommon: 'Engine/Source/Runtime/ClothingSystemRuntimeCommon',
+      ClothingSystemRuntimeNv: 'Engine/Source/Runtime/ClothingSystemRuntimeNv',
+      Advertising: 'Engine/Source/Runtime/Advertising',
+      Analytics: 'Engine/Source/Runtime/Analytics',
+      AutomationTest: 'Engine/Source/Runtime/AutomationTest',
+      AutomationWorker: 'Engine/Source/Runtime/AutomationWorker',
+      CrashReportCore: 'Engine/Source/Runtime/CrashReportCore',
+      WebBrowser: 'Engine/Source/Runtime/WebBrowser',
+      WebBrowserTexture: 'Engine/Source/Runtime/WebBrowserTexture',
+      Experimental: 'Engine/Source/Runtime/Experimental',
+      VirtualProduction: 'Engine/Source/Runtime/VirtualProduction',
+      UnrealGame: 'Engine/Source/Runtime/UnrealGame',
+      BlueprintRuntime: 'Engine/Source/Runtime/BlueprintRuntime',
+      VerseCompiler: 'Engine/Source/Runtime/VerseCompiler'
     };
 
     const subsystemDir = subsystemDirs[subsystem];
@@ -935,10 +1195,14 @@ export class UnrealCodeAnalyzer {
       throw new Error(`Subsystem directory not found: ${fullPath}`);
     }
 
-    // Get all source files
+    // Get all source files - exclude template directories
     subsystemInfo.sourceFiles = globSync('**/*.{h,cpp}', {
       cwd: fullPath,
-    });
+    }).filter(file => 
+      !file.includes('Templates') && 
+      !file.includes('Template') && 
+      !file.includes('TP_')
+    );
 
     // Process files in parallel batches
     const BATCH_SIZE = 10;

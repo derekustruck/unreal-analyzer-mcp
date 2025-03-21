@@ -4,7 +4,7 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-
+import * as path from 'path';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -378,8 +378,26 @@ class UnrealAnalyzerServer {
 
   private async handleDetectPatterns(args: any) {
     try {
-      const fileContent = await require('fs').promises.readFile(args.filePath, 'utf8');
-      const patterns = await this.analyzer.detectPatterns(fileContent, args.filePath);
+      // Check if the path is within allowed directories
+      const filePath = args.filePath;
+      const isAbsolutePath = path.isAbsolute(filePath);
+      
+      // If it's an absolute path, verify it's in an allowed directory
+      if (isAbsolutePath) {
+        const unrealPath = await this.analyzer.getUnrealPath();
+        const customPath = await this.analyzer.getCustomPath();
+        
+        const isAllowedPath = 
+          (unrealPath && filePath.startsWith(unrealPath)) ||
+          (customPath && filePath.startsWith(customPath));
+        
+        if (!isAllowedPath) {
+          throw new Error(`Security restriction: Cannot access files outside of allowed directories. File path: ${filePath}`);
+        }
+      }
+      
+      const fileContent = await require('fs').promises.readFile(filePath, 'utf8');
+      const patterns = await this.analyzer.detectPatterns(fileContent, filePath);
       
       // Format the output to be more readable in Cline
       const formattedPatterns = patterns.map(match => {
