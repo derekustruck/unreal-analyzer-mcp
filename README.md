@@ -29,7 +29,7 @@ This is an updated version of the Ayelet implementation that addresses the chang
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/ayeletstudioindia/unreal-analyzer-mcp
+git clone https://github.com/derekustruck/unreal-analyzer-mcp
 cd unreal-analyzer-mcp
 ```
 
